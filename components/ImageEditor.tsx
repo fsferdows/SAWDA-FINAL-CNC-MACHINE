@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { 
     UndoIcon, RedoIcon, DownloadIcon, ChevronDownIcon,
@@ -31,21 +32,25 @@ const DXF_LAYER_COLORS = [
 ];
 
 const getLayerNameForIndex = (index: number, totalLayers: number): string => {
-    const deepThreshold = Math.ceil(totalLayers / 3);
-    const mediumThreshold = Math.ceil(totalLayers * 2 / 3);
-  
-    let prefix = '';
-    // Layer index 0 is the deepest (darkest color)
-    if (index < deepThreshold) {
-      prefix = 'DEEP_CUT';
-    } else if (index < mediumThreshold) {
-      prefix = 'MEDIUM_CUT';
+    // Layer index 0 is the deepest (darkest color), index totalLayers-1 is the shallowest.
+    if (totalLayers <= 1) {
+        // This case is unlikely for 3D, but good to handle.
+        return `LAYER_${index + 1}`;
+    }
+
+    let prefix: string;
+    
+    if (index === 0) {
+        prefix = 'BASE_LAYER'; // The deepest cut
+    } else if (index === totalLayers - 1) {
+        prefix = 'DETAIL_LAYER'; // The finest, shallowest detail
     } else {
-      prefix = 'SHALLOW_DETAIL';
+        prefix = 'MID_LAYER'; // Everything in between
     }
     
     return `${prefix}_${index + 1}`;
 };
+
 
 const generateDxf = (imgData: ImageData, designOpts: DesignOptions): string => {
     const width = imgData.width;
@@ -187,6 +192,8 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
   const [viewMode, setViewMode] = useState<ViewMode>('EDIT');
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(new Set());
   const [layerColors, setLayerColors] = useState<Record<string, string>>({});
+  const [layerOpacities, setLayerOpacities] = useState<Record<string, number>>({});
+
 
   const getCanvasPoint = useCallback((e: React.MouseEvent<HTMLCanvasElement> | React.WheelEvent<HTMLCanvasElement>): Point | null => {
       const canvas = canvasRef.current;
@@ -231,10 +238,14 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
             if(layerCtx){
                 for(const layerName of layerNames) {
                     if (visibleLayers.has(layerName) && layerData[layerName]) {
+                        layerCtx.clearRect(0, 0, layerCanvas.width, layerCanvas.height);
                         layerCtx.putImageData(layerData[layerName], 0, 0);
+                        
+                        tempCtx.globalAlpha = layerOpacities[layerName] ?? 1;
                         tempCtx.drawImage(layerCanvas, 0, 0);
                     }
                 }
+                tempCtx.globalAlpha = 1; // Reset alpha
             }
         }
     }
@@ -250,11 +261,11 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
     
     context.restore();
 
-  }, [context, viewTransform, history, historyIndex, viewMode, layerData, layerNames, visibleLayers]);
+  }, [context, viewTransform, history, historyIndex, viewMode, layerData, layerNames, visibleLayers, layerOpacities]);
 
   useEffect(() => {
     redrawCanvas();
-  }, [viewTransform, redrawCanvas, viewMode, visibleLayers]);
+  }, [viewTransform, redrawCanvas, viewMode, visibleLayers, layerOpacities]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -278,28 +289,32 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
   
   const is3DDesign = options.designType === '3D Relief' || options.designType === 'Mixed';
 
-  // Effect to initialize layer names and default colors
+  // Effect to initialize layer names and default colors/opacities
   useEffect(() => {
     if (!history[0] || !is3DDesign) {
       setLayerNames([]);
       setVisibleLayers(new Set());
       setLayerColors({});
+      setLayerOpacities({});
       return;
     }
     
     const numLayers = options.depthLayers;
     const generatedLayerNames: string[] = [];
     const initialColors: Record<string, string> = {};
+    const initialOpacities: Record<string, number> = {};
 
     for (let i = 0; i < numLayers; i++) {
         const layerName = getLayerNameForIndex(i, numLayers);
         generatedLayerNames.push(layerName);
         initialColors[layerName] = DXF_LAYER_COLORS[i % DXF_LAYER_COLORS.length].hex;
+        initialOpacities[layerName] = 1;
     }
 
     setLayerNames(generatedLayerNames);
     setVisibleLayers(new Set(generatedLayerNames));
     setLayerColors(initialColors);
+    setLayerOpacities(initialOpacities);
     setViewMode('EDIT');
   }, [history[0], options.depthLayers, options.designType, is3DDesign]);
   
@@ -320,7 +335,6 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
     const generatedLayers: Record<string, ImageData> = {};
     const layerPixelData: Record<string, Uint8ClampedArray> = {};
     
-    // Regenerate the list of layer names for this specific execution to avoid stale state
     const currentExecutionLayerNames: string[] = [];
     for (let i = 0; i < numLayers; i++) {
         currentExecutionLayerNames.push(getLayerNameForIndex(i, numLayers));
@@ -341,13 +355,11 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
                 
                 if (gray >= minGray && gray <= (l === numLayers - 1 ? 255 : maxGray)) {
                     const layerName = getLayerNameForIndex(l, numLayers);
-                    // Use a more robust fallback for color in case layerColors is stale
                     const color = layerColors[layerName] || DXF_LAYER_COLORS[l % DXF_LAYER_COLORS.length].hex;
                     const r = parseInt(color.substring(1, 3), 16);
                     const g = parseInt(color.substring(3, 5), 16);
                     const b = parseInt(color.substring(5, 7), 16);
 
-                    // We are now sure layerPixelData[layerName] exists because we created it just above
                     if (layerPixelData[layerName]) {
                         layerPixelData[layerName][i] = r;
                         layerPixelData[layerName][i+1] = g;
@@ -584,28 +596,23 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
         const numLayers = options.depthLayers;
         const grayscaleStep = 256 / numLayers;
 
-        for (let i = 0; i < sourceData.length; i+=4) {
-            const gray = (sourceData[i] + sourceData[i+1] + sourceData[i+2]) / 3;
+        // Optimized pixel processing loop
+        for (let i = 0; i < sourceData.length; i += 4) {
             const alpha = sourceData[i+3];
+            if (alpha < 128) continue; // Skip transparent pixels
 
-            if (alpha > 128) { // Process only non-transparent pixels
-                for (let l = 0; l < numLayers; l++) {
-                    const minGray = Math.floor(l * grayscaleStep);
-                    const maxGray = Math.floor((l + 1) * grayscaleStep) - 1;
-                    const finalMaxGray = l === numLayers - 1 ? 255 : maxGray;
-                    
-                    if (gray >= minGray && gray <= finalMaxGray) {
-                        const layerName = getLayerNameForIndex(l, numLayers);
-                        if (visibleLayers.has(layerName)) {
-                            // If the layer is visible, copy the original pixel data
-                            compositeDataArray[i] = sourceData[i];
-                            compositeDataArray[i+1] = sourceData[i+1];
-                            compositeDataArray[i+2] = sourceData[i+2];
-                            compositeDataArray[i+3] = sourceData[i+3];
-                        }
-                        break; // Pixel's layer found, move to next pixel
-                    }
-                }
+            const gray = (sourceData[i] + sourceData[i+1] + sourceData[i+2]) / 3;
+
+            // Directly calculate layer index instead of looping
+            const layerIndex = Math.min(numLayers - 1, Math.floor(gray / grayscaleStep));
+            const layerName = getLayerNameForIndex(layerIndex, numLayers);
+
+            if (visibleLayers.has(layerName)) {
+                // If the layer is visible, copy the original pixel data
+                compositeDataArray[i] = sourceData[i];
+                compositeDataArray[i+1] = sourceData[i+1];
+                compositeDataArray[i+2] = sourceData[i+2];
+                compositeDataArray[i+3] = sourceData[i+3];
             }
         }
         
@@ -663,13 +670,7 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
   }
 
   const handleToggleLayerVisibility = (layerName: string) => {
-    // If not already in layer preview, switch to it. This ensures the app remains
-    // in the correct mode when interacting with layers.
-    if (viewMode !== 'LAYER_PREVIEW') {
-      setViewMode('LAYER_PREVIEW');
-    }
-
-    // Toggle the visibility of the clicked layer.
+    // When a layer is clicked in the list, we toggle its visibility...
     setVisibleLayers(prev => {
         const newSet = new Set(prev);
         if (newSet.has(layerName)) {
@@ -679,10 +680,17 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
         }
         return newSet;
     });
+    // ...and always ensure the view mode is 'LAYER_PREVIEW'.
+    // This handles both switching from 'EDIT' mode and staying in 'LAYER_PREVIEW' mode.
+    setViewMode('LAYER_PREVIEW');
   };
   
   const handleColorChange = (layerName: string, color: string) => {
     setLayerColors(prev => ({ ...prev, [layerName]: color }));
+  };
+
+  const handleOpacityChange = (layerName: string, opacity: number) => {
+    setLayerOpacities(prev => ({ ...prev, [layerName]: opacity }));
   };
 
   const isEditingDisabled = viewMode !== 'EDIT';
@@ -752,40 +760,58 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
                         const color = layerColors[name] || '#FFFFFF';
                         const isVisible = visibleLayers.has(name);
                         return (
-                        <div
-                            key={name}
-                            onClick={() => handleToggleLayerVisibility(name)}
-                            className={`w-full text-left px-3 py-1.5 text-xs font-semibold rounded flex items-center justify-between gap-2 transition-colors cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700`}
-                        >
-                            <div className={`flex items-center gap-2 flex-grow ${viewMode === 'LAYER_PREVIEW' && isVisible ? 'text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'}`}>
-                                <div className="relative w-4 h-4 flex-shrink-0">
-                                    <div className="absolute inset-0 rounded-full" style={{ backgroundColor: color, border: '1px solid rgba(128,128,128,0.5)' }}></div>
-                                    <input
-                                        type="color"
-                                        value={color}
-                                        onClick={(e) => e.stopPropagation()}
-                                        onChange={(e) => {
-                                            e.stopPropagation();
-                                            handleColorChange(name, e.target.value);
-                                        }}
-                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                        aria-label={`Change color for ${name}`}
-                                    />
-                                </div>
-                                <span className="flex-1">{name}</span>
-                                {isVisible ? <EyeIcon className="w-4 h-4" /> : <EyeSlashIcon className="w-4 h-4" />}
-                            </div>
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleLayerDownload(name, 'png');
-                                }}
-                                className="p-1 rounded-full hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 flex-shrink-0"
-                                title={`Download ${name} as PNG`}
-                                aria-label={`Download ${name} as PNG`}
+                        <div key={name} className="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                            <div
+                                onClick={() => handleToggleLayerVisibility(name)}
+                                className={`w-full text-left text-xs font-semibold flex items-center justify-between gap-2 transition-colors cursor-pointer`}
                             >
-                                <DownloadIcon className="w-4 h-4" />
-                            </button>
+                                <div className={`flex items-center gap-2 flex-grow ${viewMode === 'LAYER_PREVIEW' && isVisible ? 'text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'}`}>
+                                    <div className="relative w-4 h-4 flex-shrink-0">
+                                        <div className="absolute inset-0 rounded-full" style={{ backgroundColor: color, border: '1px solid rgba(128,128,128,0.5)' }}></div>
+                                        <input
+                                            type="color"
+                                            value={color}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onChange={(e) => {
+                                                e.stopPropagation();
+                                                handleColorChange(name, e.target.value);
+                                            }}
+                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                            aria-label={`Change color for ${name}`}
+                                        />
+                                    </div>
+                                    <span className="flex-1">{name}</span>
+                                    {isVisible ? <EyeIcon className="w-4 h-4" /> : <EyeSlashIcon className="w-4 h-4" />}
+                                </div>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleLayerDownload(name, 'png');
+                                    }}
+                                    className="p-1 rounded-full hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 flex-shrink-0"
+                                    title={`Download ${name} as PNG`}
+                                    aria-label={`Download ${name} as PNG`}
+                                >
+                                    <DownloadIcon className="w-4 h-4" />
+                                </button>
+                            </div>
+                            {isVisible && viewMode === 'LAYER_PREVIEW' && (
+                                <div className="mt-2 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="1"
+                                        step="0.01"
+                                        value={layerOpacities[name] ?? 1}
+                                        onChange={(e) => handleOpacityChange(name, parseFloat(e.target.value))}
+                                        className="w-full h-1.5 bg-gray-300 dark:bg-gray-600 rounded-full appearance-none cursor-pointer"
+                                        aria-label={`Opacity for ${name}`}
+                                    />
+                                    <span className="text-xs w-10 text-right font-mono text-gray-500 dark:text-gray-400">
+                                        {Math.round((layerOpacities[name] ?? 1) * 100)}%
+                                    </span>
+                                </div>
+                            )}
                         </div>
                     )})}
                 </div>
