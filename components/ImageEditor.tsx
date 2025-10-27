@@ -303,9 +303,9 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
     setViewMode('EDIT');
   }, [history[0], options.depthLayers, options.designType, is3DDesign]);
   
-  // Effect to re-generate colored layer data when colors change
+  // Effect to re-generate colored layer data when colors change or layer count changes
   useEffect(() => {
-    if (!history[0] || !is3DDesign || layerNames.length === 0 || Object.keys(layerColors).length === 0) {
+    if (!history[0] || !is3DDesign) {
         setLayerData({});
         return;
     }
@@ -319,8 +319,14 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
     
     const generatedLayers: Record<string, ImageData> = {};
     const layerPixelData: Record<string, Uint8ClampedArray> = {};
+    
+    // Regenerate the list of layer names for this specific execution to avoid stale state
+    const currentExecutionLayerNames: string[] = [];
+    for (let i = 0; i < numLayers; i++) {
+        currentExecutionLayerNames.push(getLayerNameForIndex(i, numLayers));
+    }
 
-    for (const layerName of layerNames) {
+    for (const layerName of currentExecutionLayerNames) {
         layerPixelData[layerName] = new Uint8ClampedArray(width * height * 4);
     }
     
@@ -335,27 +341,33 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
                 
                 if (gray >= minGray && gray <= (l === numLayers - 1 ? 255 : maxGray)) {
                     const layerName = getLayerNameForIndex(l, numLayers);
-                    const color = layerColors[layerName] || '#FFFFFF'; // Fallback
+                    // Use a more robust fallback for color in case layerColors is stale
+                    const color = layerColors[layerName] || DXF_LAYER_COLORS[l % DXF_LAYER_COLORS.length].hex;
                     const r = parseInt(color.substring(1, 3), 16);
                     const g = parseInt(color.substring(3, 5), 16);
                     const b = parseInt(color.substring(5, 7), 16);
 
-                    layerPixelData[layerName][i] = r;
-                    layerPixelData[layerName][i+1] = g;
-                    layerPixelData[layerName][i+2] = b;
-                    layerPixelData[layerName][i+3] = 255;
+                    // We are now sure layerPixelData[layerName] exists because we created it just above
+                    if (layerPixelData[layerName]) {
+                        layerPixelData[layerName][i] = r;
+                        layerPixelData[layerName][i+1] = g;
+                        layerPixelData[layerName][i+2] = b;
+                        layerPixelData[layerName][i+3] = 255;
+                    }
                     break;
                 }
             }
         }
     }
 
-    for (const name of layerNames) {
-        generatedLayers[name] = new ImageData(layerPixelData[name], width, height);
+    for (const name of currentExecutionLayerNames) {
+        if (layerPixelData[name]) {
+            generatedLayers[name] = new ImageData(layerPixelData[name], width, height);
+        }
     }
     
     setLayerData(generatedLayers);
-  }, [history[0], is3DDesign, layerNames, layerColors, options.depthLayers]);
+  }, [history[0], is3DDesign, layerColors, options.depthLayers]);
 
   useEffect(() => {
     if (canvasRef.current) {
@@ -651,7 +663,13 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
   }
 
   const handleToggleLayerVisibility = (layerName: string) => {
-    setViewMode('LAYER_PREVIEW');
+    // If not already in layer preview, switch to it. This ensures the app remains
+    // in the correct mode when interacting with layers.
+    if (viewMode !== 'LAYER_PREVIEW') {
+      setViewMode('LAYER_PREVIEW');
+    }
+
+    // Toggle the visibility of the clicked layer.
     setVisibleLayers(prev => {
         const newSet = new Set(prev);
         if (newSet.has(layerName)) {
@@ -737,24 +755,37 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
                         <div
                             key={name}
                             onClick={() => handleToggleLayerVisibility(name)}
-                            className={`w-full text-left px-3 py-1.5 text-xs font-semibold rounded flex items-center gap-2 transition-colors cursor-pointer ${viewMode === 'LAYER_PREVIEW' && isVisible ? 'text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'} hover:bg-gray-200 dark:hover:bg-gray-700`}
+                            className={`w-full text-left px-3 py-1.5 text-xs font-semibold rounded flex items-center justify-between gap-2 transition-colors cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700`}
                         >
-                            <div className="relative w-4 h-4 flex-shrink-0">
-                                <div className="absolute inset-0 rounded-full" style={{ backgroundColor: color, border: '1px solid rgba(128,128,128,0.5)' }}></div>
-                                <input
-                                    type="color"
-                                    value={color}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onChange={(e) => {
-                                        e.stopPropagation();
-                                        handleColorChange(name, e.target.value);
-                                    }}
-                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                    aria-label={`Change color for ${name}`}
-                                />
+                            <div className={`flex items-center gap-2 flex-grow ${viewMode === 'LAYER_PREVIEW' && isVisible ? 'text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'}`}>
+                                <div className="relative w-4 h-4 flex-shrink-0">
+                                    <div className="absolute inset-0 rounded-full" style={{ backgroundColor: color, border: '1px solid rgba(128,128,128,0.5)' }}></div>
+                                    <input
+                                        type="color"
+                                        value={color}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={(e) => {
+                                            e.stopPropagation();
+                                            handleColorChange(name, e.target.value);
+                                        }}
+                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                        aria-label={`Change color for ${name}`}
+                                    />
+                                </div>
+                                <span className="flex-1">{name}</span>
+                                {isVisible ? <EyeIcon className="w-4 h-4" /> : <EyeSlashIcon className="w-4 h-4" />}
                             </div>
-                            <span className="flex-1">{name}</span>
-                            {isVisible ? <EyeIcon className="w-4 h-4" /> : <EyeSlashIcon className="w-4 h-4" />}
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleLayerDownload(name, 'png');
+                                }}
+                                className="p-1 rounded-full hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 flex-shrink-0"
+                                title={`Download ${name} as PNG`}
+                                aria-label={`Download ${name} as PNG`}
+                            >
+                                <DownloadIcon className="w-4 h-4" />
+                            </button>
                         </div>
                     )})}
                 </div>
@@ -764,7 +795,7 @@ export const ImageEditor: React.FC<ImageEditorProps> = ({ src, options, isLoadin
         <div className="relative mt-4" ref={downloadButtonRef}>
             <button
                 onClick={() => setIsDownloadMenuOpen(prev => !prev)}
-                className="flex items-center justify-center gap-2 bg-green-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-green-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 focus:ring-offset-gray-100 dark:focus:ring-offset-gray-900"
+                className="flex items-center justify-center gap-2 bg-green-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-green-700 transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-gray-100 dark:focus:ring-offset-gray-900"
             >
                 <DownloadIcon className="w-5 h-5" />
                 Download Design

@@ -77,22 +77,26 @@ const App: React.FC = () => {
       let promptDetails = '';
 
       if (designOptions.designType === '2D Flat') {
-        promptDetails = `Generate a high-contrast, monochrome black and white bitmap image suitable for a 2D wood engraving.
+        promptDetails = `Generate an ultra-high quality, high-contrast, monochrome black and white bitmap image suitable for a 2D wood engraving. The output must be exceptionally clean and professional, ready for a CNC toolpath.
 - BLACK areas represent the parts to be ENGRAVED.
 - WHITE areas represent the UNTOUCHED wood surface.
-- The design must consist of clean, solid lines and shapes. Absolutely NO gray tones, dithering, or anti-aliasing.
-- The outline thickness should be ${designOptions.outlineThickness} on a relative scale of 1 to 10.`;
+- The design must consist of clean, solid, crisp lines and shapes with vector-like precision.
+- Absolutely NO gray tones, dithering, anti-aliasing, or compression artifacts. The edges must be perfectly sharp.
+- The outline thickness should be ${designOptions.outlineThickness} on a relative scale of 1 to 10.
+- The final image should be of the highest possible resolution and clarity.`;
       } else { // 3D Relief or Mixed
-        promptDetails = `Generate a grayscale depth map suitable for a 3D relief wood carving.
+        promptDetails = `Generate a studio-quality, ultra-high resolution grayscale depth map suitable for a 3D relief wood carving. The output must be flawless and artifact-free, ready for CNC machining.
 - WHITE (#FFFFFF) represents the highest point (the uncarved surface of the wood).
 - BLACK (#000000) represents the deepest engraved point.
-- Use smooth gradients and a full, well-distributed range of grayscale values to represent the varying depths. This is critical as the design will be sliced into ${designOptions.depthLayers} distinct depth layers for machining.
-- The design should have well-defined edges, with the sharpness corresponding to an outline thickness of ${designOptions.outlineThickness} on a scale of 1 to 10.`;
+- Use smooth, flawless gradients and a full, well-distributed range of grayscale values to represent the varying depths. This is critical as the design will be sliced into ${designOptions.depthLayers} distinct depth layers for machining.
+- The design should have well-defined, crisp edges, with the sharpness corresponding to an outline thickness of ${designOptions.outlineThickness} on a scale of 1 to 10.
+- Avoid any posterization, banding, or compression artifacts. The gradients must be perfectly smooth.
+- The final image should be of the highest possible quality and detail.`;
       }
 
-      const accuracyInstruction = `Your primary task is to create a CNC design for furniture based on the reference image.
-**Correction First:** Analyze the source image for any perspective distortion or angle. Correct it to produce a clean, straight-on, orthographic view of the furniture.
-**High Fidelity:** The final design must be a highly accurate and faithful representation of the furniture in the reference image. Preserve the core shapes, proportions, and key features.`;
+      const accuracyInstruction = `Your primary task is to create a production-quality CNC design for furniture based on the reference image. The final output must be of the highest possible quality and clarity.
+**Correction First:** Analyze the source image for any perspective distortion or angle. Correct it to produce a clean, straight-on, orthographic view of the furniture. This step is crucial for accuracy.
+**High Fidelity & Ultra Quality:** The final design must be a highly accurate and faithful representation of the furniture in the reference image. Preserve the core shapes, proportions, and key features. The final image output must be extremely clear, crisp, and artifact-free, suitable for direct use in professional manufacturing.`;
 
       let fullPrompt = accuracyInstruction;
 
@@ -113,7 +117,7 @@ const App: React.FC = () => {
         text: fullPrompt,
       };
       
-      const systemInstruction = `You are an expert CNC furniture designer. Your primary goal is to convert user photos of furniture into production-ready, highly accurate CNC engraving plans. A critical part of your task is to analyze the source image for perspective distortion or awkward angles and correct it to produce a clean, straight-on, orthographic view before generating the final design. The output must be a faithful representation of the reference furniture, suitable for manufacturing.`;
+      const systemInstruction = `You are an expert CNC furniture designer. Your primary goal is to convert user photos of furniture into production-ready, ultra-high-quality, and highly accurate CNC engraving plans. A critical part of your task is to analyze the source image for perspective distortion or awkward angles and correct it to produce a clean, straight-on, orthographic view before generating the final design. The output must be a faithful representation of the reference furniture, suitable for professional manufacturing with zero tolerance for artifacts or low quality.`;
 
       const generateParams = {
         model: 'gemini-2.5-flash-image',
@@ -127,25 +131,22 @@ const App: React.FC = () => {
       };
 
       let response;
-      const maxRetries = 3;
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      let attempt = 1;
+      while (true) {
         try {
           response = await ai.models.generateContent(generateParams);
           break; // Success
         } catch (error: any) {
           const isRateLimitError = error?.toString().includes('429') || error?.error?.status === 'RESOURCE_EXHAUSTED';
-          if (isRateLimitError && attempt < maxRetries) {
-            const delay = Math.pow(2, attempt - 1) * 1000 + Math.random() * 1000;
-            console.warn(`Rate limit exceeded. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${maxRetries})`);
+          if (isRateLimitError) {
+            const delay = Math.min(30000, Math.pow(2, attempt - 1) * 1000 + Math.random() * 1000); // Cap delay at 30s
+            console.warn(`Rate limit exceeded. Retrying in ${Math.round(delay)}ms... (Attempt ${attempt})`);
             await sleep(delay);
+            attempt++;
           } else {
-            throw error; // Max retries reached or a non-retriable error
+            throw error; // A non-retriable error occurred
           }
         }
-      }
-
-      if (!response) {
-          throw new Error("Failed to get a response from the AI after multiple retries.");
       }
       
       let foundImage = false;
